@@ -9,13 +9,13 @@ import { COLORS, SIZES, SHADOWS, BRAND } from './src/constants/theme';
 // =================================================================
 // Web-only CSS overrides
 // react-native-web compiles StyleSheets into hashed atomic classes
-// (e.g. `r-backgroundColor-1igom6c`). Override them by injecting a
-// stylesheet at runtime. NOTE: these class hashes are produced from
-// the source color value — if the source value changes (or you
-// upgrade react-native-web), the hash may change too.
+// (e.g. `r-1igom6c`). Override them by injecting a stylesheet at
+// runtime. NOTE: these class hashes are produced from the source
+// color value — if the source value changes (or you upgrade
+// react-native-web), the hash may change too.
 // =================================================================
 const WEB_CSS_OVERRIDES = `
-  .r-backgroundColor-1igom6c { background-color: #14bbd3 !important; }
+  .r-1igom6c { background-color: #14bbd3 !important; }
 `;
 
 const useInjectWebStyles = () => {
