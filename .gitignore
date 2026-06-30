@@ -71,3 +71,13 @@ coverage/
 # =============================================================
 *.orig
 *.tsbuildinfo
+
+# =============================================================
+# Vercel
+# =============================================================
+.vercel/
+
+# .env* would also match .env.example which we want tracked,
+# so leave the explicit .env / .env.local / .env.*.local rules
+# above as the source of truth for env files.
+
