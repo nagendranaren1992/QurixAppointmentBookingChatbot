@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { View, TextInput, TouchableOpacity, StyleSheet, Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SIZES, SHADOWS } from '../constants/theme';
 
-// ChatInput — used for free-text inputs inside the chat flow (name, mobile, etc.)
-const ChatInput = ({
+// ChatInput — free-text input used inside the chat flow.
+// Exposes an imperative `focus()` / `blur()` API via ref so the parent
+// can re-focus the field after each bot reply.
+const ChatInput = forwardRef(({
   placeholder = 'Type here...',
   onSubmit,
   keyboardType = 'default',
@@ -12,9 +14,20 @@ const ChatInput = ({
   autoFocus = true,
   validate,
   prefix,
-}) => {
+  // Optional transform applied on every keystroke. Useful for masks like
+  // "digits only" (e.g., mobile number). Receives raw text, returns clean text.
+  sanitize,
+}, ref) => {
   const [value, setValue] = useState('');
   const [error, setError] = useState(null);
+  const [focused, setFocused] = useState(false);
+  const inputRef = useRef(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => inputRef.current?.focus?.(),
+    blur: () => inputRef.current?.blur?.(),
+    clear: () => setValue(''),
+  }), []);
 
   const handleSubmit = () => {
     const trimmed = value.trim();
@@ -30,19 +43,34 @@ const ChatInput = ({
 
   return (
     <View style={styles.wrap}>
-      <View style={[styles.inputRow, error && styles.inputRowError]}>
+      <View
+        style={[
+          styles.inputRow,
+          focused && styles.inputRowFocused,
+          error && styles.inputRowError,
+        ]}
+      >
         {prefix && <Text style={styles.prefix}>{prefix}</Text>}
         <TextInput
+          ref={inputRef}
           style={styles.input}
           value={value}
-          onChangeText={(t) => { setValue(t); if (error) setError(null); }}
+          onChangeText={(t) => {
+            const clean = sanitize ? sanitize(t) : t;
+            setValue(clean);
+            if (error) setError(null);
+          }}
           placeholder={placeholder}
           placeholderTextColor={COLORS.textMuted}
           keyboardType={keyboardType}
           maxLength={maxLength}
           autoFocus={autoFocus}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           onSubmitEditing={handleSubmit}
           returnKeyType="send"
+          selectionColor={COLORS.primary}
+          underlineColorAndroid="transparent"
         />
         <TouchableOpacity
           style={[styles.sendBtn, !value.trim() && styles.sendBtnDisabled]}
@@ -55,7 +83,9 @@ const ChatInput = ({
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
-};
+});
+
+ChatInput.displayName = 'ChatInput';
 
 const styles = StyleSheet.create({
   wrap: { paddingHorizontal: 12, marginTop: 8 },
@@ -70,19 +100,33 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     ...SHADOWS.small,
   },
+  inputRowFocused: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.white,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 3,
+  },
   inputRowError: { borderColor: COLORS.error },
   prefix: {
-    color: COLORS.textSecondary,
-    fontSize: SIZES.medium,
-    marginRight: 6,
-    fontWeight: '500',
+    color: COLORS.textPrimary,
+    fontSize: SIZES.large,
+    marginRight: 8,
+    fontWeight: '600',
   },
   input: {
     flex: 1,
-    fontSize: SIZES.medium,
-    paddingVertical: 10,
+    fontSize: SIZES.large,
+    lineHeight: 22,
+    paddingVertical: 12,
     color: COLORS.textPrimary,
-    outlineWidth: 0, // RN web
+    fontWeight: '500',
+    // RN-web: kill the default browser focus ring + caret default.
+    outlineWidth: 0,
+    outlineStyle: 'none',
+    caretColor: COLORS.primary,
   },
   sendBtn: {
     width: 36, height: 36, borderRadius: 18,

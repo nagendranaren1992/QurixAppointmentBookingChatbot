@@ -23,6 +23,14 @@ import { COLORS, SIZES, SHADOWS } from '../constants/theme';
 import { chatCompletion, hasApiKey, LLM_MODEL } from '../services/llm';
 import { buildSystemPrompt } from '../services/agentPrompt';
 import { TOOL_SCHEMA, callTool, widgetFromToolResult } from '../services/agentTools';
+import { validateMobile } from '../utils/validators';
+
+// Heuristic: did the bot's last message ask for a mobile/phone number?
+// Triggers the input's "phone-pad + max 10 digits + +91 prefix" mode.
+// Matches phrasings like "mobile number", "phone number", "your mobile",
+// and retry prompts like "valid 10-digit number".
+const MOBILE_PROMPT_RE = /\b(mobile|phone)\b|\b10[- ]?digit\b/i;
+const digitsOnly = (t) => (t || '').replace(/\D/g, '').slice(0, 10);
 
 // =================================================================
 // ChatBot — conversational agent UI
@@ -104,6 +112,8 @@ const ChatBot = () => {
   const confirmResolverRef = useRef(null);
 
   const scrollRef = useRef(null);
+  // Imperative handle into the ChatInput so we can re-focus after each bot turn.
+  const chatInputRef = useRef(null);
 
   // -----------------------------------------------------------------
   // Display helpers
@@ -296,6 +306,16 @@ const ChatBot = () => {
       .catch(() => { /* ignore — will fetch on demand */ });
   }, []);
 
+  // Auto-focus the chat input whenever the bot finishes its turn so the
+  // user can keep typing without clicking back into the field. We skip
+  // focusing while the confirmation card is up (user needs to tap a
+  // button) or after the booking is complete (input is unmounted).
+  useEffect(() => {
+    if (isTyping || inputDisabled || pendingConfirm || appointment) return;
+    const t = setTimeout(() => chatInputRef.current?.focus?.(), 50);
+    return () => clearTimeout(t);
+  }, [isTyping, inputDisabled, pendingConfirm, appointment, displayMessages.length]);
+
   // -----------------------------------------------------------------
   // Widget → user-message handlers
   // -----------------------------------------------------------------
@@ -432,6 +452,16 @@ const ChatBot = () => {
   // -----------------------------------------------------------------
   // Layout
   // -----------------------------------------------------------------
+  // Find the most recent bot message and check if it's asking for a mobile
+  // number; if so, swap in the constrained phone-pad input below.
+  const lastBotText = (() => {
+    for (let i = displayMessages.length - 1; i >= 0; i--) {
+      if (displayMessages[i].sender === 'bot') return displayMessages[i].text || '';
+    }
+    return '';
+  })();
+  const askingMobile = MOBILE_PROMPT_RE.test(lastBotText);
+
   return (
     <View style={styles.container}>
       <ChatHeader onReset={startConversation} />
@@ -482,11 +512,26 @@ const ChatBot = () => {
 
         <View style={styles.inputDock}>
           {!appointment && (
-            <ChatInput
-              placeholder="Ask anything or type to reply..."
-              onSubmit={onSubmitText}
-              autoFocus={false}
-            />
+            askingMobile ? (
+              <ChatInput
+                ref={chatInputRef}
+                placeholder="10-digit mobile number"
+                keyboardType="phone-pad"
+                maxLength={10}
+                prefix="+91"
+                sanitize={digitsOnly}
+                validate={validateMobile}
+                onSubmit={onSubmitText}
+                autoFocus
+              />
+            ) : (
+              <ChatInput
+                ref={chatInputRef}
+                placeholder="Ask anything or type to reply..."
+                onSubmit={onSubmitText}
+                autoFocus
+              />
+            )
           )}
           <Text style={styles.poweredBy}>
             Powered by {LLM_MODEL}
