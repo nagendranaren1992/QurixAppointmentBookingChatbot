@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -16,482 +16,422 @@ import ChatMessage from './ChatMessage';
 import TypingIndicator from './TypingIndicator';
 import OptionList from './OptionList';
 import ChatInput from './ChatInput';
-import DOBPicker from './DOBPicker';
 import BookingConfirmation from './BookingConfirmation';
 
 import api from '../services/api';
 import { COLORS, SIZES, SHADOWS } from '../constants/theme';
-import { validateMobile, validateName, formatDate } from '../utils/validators';
-import { filterProceduresForPatient } from '../models/procedure';
+import { chatCompletion, hasApiKey, LLM_MODEL } from '../services/llm';
+import { buildSystemPrompt } from '../services/agentPrompt';
+import { TOOL_SCHEMA, callTool, widgetFromToolResult } from '../services/agentTools';
 
 // =================================================================
-// Conversation step constants — each represents a stage in the flow
+// ChatBot — conversational agent UI
+//
+// Runs a tool-calling loop against the LLM. The LLM drives the
+// conversation; this component:
+//   - renders chat bubbles + a typing indicator
+//   - renders inline pickers when the LLM returns selectable results
+//     (doctors / time slots / procedures)
+//   - shows a hard confirmation card before any actual booking call
+//   - shows a success card after a successful booking
 // =================================================================
-const STEP = {
-  WELCOME: 'WELCOME',
-  SELECT_DEPARTMENT: 'SELECT_DEPARTMENT',
-  SELECT_DOCTOR: 'SELECT_DOCTOR',
-  SELECT_SLOT: 'SELECT_SLOT',
-  ASK_MOBILE: 'ASK_MOBILE',
-  SELECT_EXISTING_PATIENT: 'SELECT_EXISTING_PATIENT',
-  ASK_FIRST_NAME: 'ASK_FIRST_NAME',
-  ASK_LAST_NAME: 'ASK_LAST_NAME',
-  ASK_GENDER: 'ASK_GENDER',
-  ASK_DOB: 'ASK_DOB',
-  SELECT_PROCEDURE: 'SELECT_PROCEDURE',
-  CONFIRM_BOOKING: 'CONFIRM_BOOKING',
-  BOOKED: 'BOOKED',
-  ERROR: 'ERROR',
-};
 
-const now = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const MAX_AGENT_ITERATIONS = 8;
+
+const now = () =>
+  new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+const GREETING =
+  "Hi! I'm your Qurix healthcare assistant. " +
+  "Tell me what kind of doctor you'd like to see, or describe what you need — I'll help you book an appointment.";
+
+// ----- Map flat request_booking params into the booking object api.js expects -----
+const buildBookingFromParams = (p) => ({
+  doctor: { doctorId: p.doctorId, doctorName: p.doctorName },
+  slot: {
+    slotId: p.slotId,
+    sessionInstanceId: p.sessionInstanceId,
+    sessionId: p.sessionId ?? p.sessionInstanceId,
+    sessionDate: p.sessionDate,
+    timeSlot: p.timeSlot,
+    startTime: p.displayTime || p.timeSlot,
+    date: p.sessionDate,
+  },
+  procedure: {
+    procedureId: p.procedureId,
+    procedureName: p.procedureName,
+    price: p.procedurePrice,
+  },
+  patient: p.existingPatientUuid
+    ? {
+        uuid: p.existingPatientUuid,
+        patientId: p.existingPatientUuid,
+        masterIdentifierId: p.masterIdentifierId,
+        firstName: p.firstName,
+        lastName: p.lastName,
+        gender: p.gender,
+        dob: p.dob,
+        title: p.title,
+        mobile: p.mobile,
+      }
+    : null,
+  firstName: p.firstName,
+  lastName: p.lastName,
+  gender: p.gender,
+  dob: p.dob,
+  mobile: p.mobile,
+  title: p.title,
+});
 
 const ChatBot = () => {
-  // ----------------- State -----------------
-  const [messages, setMessages] = useState([]);
-  const [step, setStep] = useState(STEP.WELCOME);
+  // ---- chat-visible state ----
+  const [displayMessages, setDisplayMessages] = useState([]);
+  const [widget, setWidget] = useState(null);          // { kind, items } | null
+  const [pendingConfirm, setPendingConfirm] = useState(null); // request_booking params | null
+  const [appointment, setAppointment] = useState(null); // { result, summary } | null
   const [isTyping, setIsTyping] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [inputDisabled, setInputDisabled] = useState(false);
 
-  // collected data
-  const [booking, setBooking] = useState({
-    department: null,
-    doctor: null,
-    slot: null,
-    procedure: null,
-    mobile: null,
-    patient: null,
-    isNewPatient: false,
-    firstName: null,
-    lastName: null,
-    gender: null,
-    dob: null,
-  });
-
-  // dynamic option lists
-  const [departments, setDepartments] = useState([]);
-  const [doctors, setDoctors] = useState([]);
-  const [slots, setSlots] = useState([]);
-  const [procedures, setProcedures] = useState([]);
-  const [existingPatients, setExistingPatients] = useState([]);
-  const [appointment, setAppointment] = useState(null);
+  // ---- agent loop bookkeeping ----
+  // OpenAI-format message history (system + user + assistant + tool).
+  const apiMessagesRef = useRef([]);
+  // Shared tool context (departments cache + confirmation resolver).
+  const ctxRef = useRef({});
+  // Resolver for the currently-pending confirmation card.
+  const confirmResolverRef = useRef(null);
 
   const scrollRef = useRef(null);
 
-  // ----------------- Helpers -----------------
+  // -----------------------------------------------------------------
+  // Display helpers
+  // -----------------------------------------------------------------
   const scrollToBottom = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
   }, []);
 
-  const pushMessage = useCallback((msg) => {
-    setMessages((prev) => [...prev, { ...msg, id: Date.now() + Math.random(), timestamp: now() }]);
-    scrollToBottom();
-  }, [scrollToBottom]);
+  const pushDisplay = useCallback(
+    (msg) => {
+      setDisplayMessages((prev) => [
+        ...prev,
+        { id: newId(), timestamp: now(), ...msg },
+      ]);
+      scrollToBottom();
+    },
+    [scrollToBottom]
+  );
 
-  const botSay = useCallback(async (text, delay = 600) => {
+  // -----------------------------------------------------------------
+  // Booking confirmation (wired into the tool context)
+  // -----------------------------------------------------------------
+  const confirmBooking = useCallback(
+    (params) =>
+      new Promise((resolve) => {
+        setPendingConfirm(params);
+        confirmResolverRef.current = resolve;
+        scrollToBottom();
+      }),
+    [scrollToBottom]
+  );
+
+  // Refresh the ctx reference so the latest closures are used.
+  ctxRef.current.confirmBooking = confirmBooking;
+
+  const handleConfirmAccept = async () => {
+    const params = pendingConfirm;
+    if (!params || !confirmResolverRef.current) return;
+    const resolve = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setPendingConfirm(null);
     setIsTyping(true);
-    scrollToBottom();
-    await new Promise((r) => setTimeout(r, delay));
-    setIsTyping(false);
-    pushMessage({ sender: 'bot', text });
-  }, [pushMessage, scrollToBottom]);
-
-  const userSay = useCallback((text) => {
-    pushMessage({ sender: 'user', text });
-  }, [pushMessage]);
-
-  // ----------------- Step transitions -----------------
-
-  // STEP 1: load departments
-  const loadDepartments = useCallback(async () => {
     try {
-      setLoading(true);
-      const data = await api.fetchDepartments();
-      setDepartments(data);
-      await botSay('Please select a department to continue:');
-      setStep(STEP.SELECT_DEPARTMENT);
-    } catch (e) {
-      await botSay(`Sorry, I couldn't load departments. ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [botSay]);
-
-  // STEP 2: show doctors for chosen department
-  // Doctors are already embedded in the department object (returned by
-  // fetchDepartments), so no extra API call is needed here.
-  const onSelectDepartment = async (dept) => {
-    userSay(dept.departmentName);
-    setBooking((b) => ({ ...b, department: dept }));
-    try {
-      const docs = api.fetchDoctorsByDepartment(dept);
-      setDoctors(docs);
-      if (!docs || docs.length === 0) {
-        await botSay(`Sorry, no doctors are available in ${dept.departmentName} right now. Please pick another department.`);
-        return;
-      }
-      await botSay(`Great choice! Here are the available doctors in ${dept.departmentName}:`);
-      setStep(STEP.SELECT_DOCTOR);
-    } catch (e) {
-      await botSay(`Failed to load doctors. ${e.message}`);
-    }
-  };
-
-  // STEP 3: load available slots for chosen doctor
-  // fetchDoctorAvailability returns a DoctorAvailability object with a
-  // pre-flattened `availableSlots` (non-booked only). Defaults to today.
-  const onSelectDoctor = async (doc) => {
-    userSay(doc.doctorName);
-    setBooking((b) => ({ ...b, doctor: doc }));
-    try {
-      setLoading(true);
-      const availability = await api.fetchDoctorAvailability(doc.doctorId);
-      const sl = availability?.availableSlots ?? [];
-      setSlots(sl);
-      if (sl.length === 0) {
-        // No slots — clear the doctor/department selection and take the user
-        // back to the department picker so they can start the journey again.
-        setBooking((b) => ({ ...b, doctor: null, department: null }));
-        setDoctors([]);
-        await botSay(`Sorry, ${doc.doctorName} has no available slots right now.`);
-        await botSay('Please select another department to continue:', 400);
-        setStep(STEP.SELECT_DEPARTMENT);
-        return;
-      }
-      await botSay(`Here are the available time slots for ${doc.doctorName}:`);
-      setStep(STEP.SELECT_SLOT);
-    } catch (e) {
-      await botSay(`Failed to check availability. ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // STEP 4: slot selected → ask mobile
-  const onSelectSlot = async (slot) => {
-    userSay(`${slot.date} · ${slot.startTime}`);
-    setBooking((b) => ({ ...b, slot }));
-    await botSay('Perfect! Now I need some patient details to confirm your booking.');
-    await botSay('Please enter your 10-digit mobile number:', 400);
-    setStep(STEP.ASK_MOBILE);
-  };
-
-  // STEP 5: mobile entered → check existing patients
-  const onSubmitMobile = async (mobile) => {
-    userSay(mobile);
-    setBooking((b) => ({ ...b, mobile }));
-    try {
-      setLoading(true);
-      const result = await api.lookupPatientsByMobile(mobile);
-      if (result.exists && result.patients.length > 0) {
-        setExistingPatients(result.patients);
-        await botSay(`I found ${result.patients.length} patient(s) registered with this number. Please select one or add a new patient:`);
-        setStep(STEP.SELECT_EXISTING_PATIENT);
-      } else {
-        await botSay("This is a new number. Let's create your patient profile.");
-        await botSay('What is your first name?', 400);
-        setStep(STEP.ASK_FIRST_NAME);
-        setBooking((b) => ({ ...b, isNewPatient: true }));
-      }
-    } catch (e) {
-      await botSay(`Couldn't look up the number. ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const onSelectExistingPatient = async (patient) => {
-    userSay(`${patient.firstName} ${patient.lastName}`);
-    setBooking((b) => ({
-      ...b,
-      patient,
-      firstName: patient.firstName,
-      lastName: patient.lastName,
-      gender: patient.gender,
-      dob: patient.dob,
-    }));
-    // Existing patient → honour their follow-up eligibility for procedure filtering
-    await loadProcedures(booking.slot.sessionId, {
-      followupEligible: !!patient.followupEligible,
-    });
-  };
-
-  const onAddNewPatient = async () => {
-    userSay('Add new patient');
-    setBooking((b) => ({ ...b, isNewPatient: true }));
-    await botSay('Sure! What is your first name?');
-    setStep(STEP.ASK_FIRST_NAME);
-  };
-
-  const onSubmitFirstName = async (firstName) => {
-    userSay(firstName);
-    setBooking((b) => ({ ...b, firstName }));
-    await botSay('And your last name?');
-    setStep(STEP.ASK_LAST_NAME);
-  };
-
-  const onSubmitLastName = async (lastName) => {
-    userSay(lastName);
-    setBooking((b) => ({ ...b, lastName }));
-    await botSay('Please select your gender:');
-    setStep(STEP.ASK_GENDER);
-  };
-
-  const onSubmitGender = async (gender) => {
-    userSay(gender);
-    setBooking((b) => ({ ...b, gender }));
-    await botSay('Lastly, what is your date of birth?');
-    setStep(STEP.ASK_DOB);
-  };
-
-  const onSubmitDOB = async (dob) => {
-    userSay(formatDate(dob));
-    setBooking((b) => ({ ...b, dob }));
-    // New patients are never follow-up eligible — hide OPREVISIT procedures.
-    await loadProcedures(booking.slot.sessionId, { followupEligible: false });
-  };
-
-  // STEP 6: load procedures for the chosen session and filter by
-  // the patient's follow-up eligibility.
-  const loadProcedures = async (sessionId, { followupEligible = false } = {}) => {
-    try {
-      setLoading(true);
-      const procs = await api.fetchProcedures(sessionId);
-      const visible = filterProceduresForPatient(procs, { followupEligible });
-      setProcedures(visible);
-      if (visible.length === 0) {
-        await botSay("Sorry, no procedures are currently available for this session.");
-        return;
-      }
-      await botSay("Almost done! Please select the type of procedure:");
-      setStep(STEP.SELECT_PROCEDURE);
-    } catch (e) {
-      await botSay(`Failed to load procedures. ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const onSelectProcedure = async (procedure) => {
-    userSay(procedure.procedureName);
-    setBooking((b) => ({ ...b, procedure }));
-    await botSay("Let me review your booking details...");
-    setStep(STEP.CONFIRM_BOOKING);
-  };
-
-  // STEP 7: final booking
-  // The booking API handles both patient creation (when there's no existing
-  // record) and the appointment in a single call — we just hand it the
-  // collected booking state and let it construct the wire payload.
-  const onConfirmBooking = async () => {
-    try {
-      setLoading(true);
+      const booking = buildBookingFromParams(params);
       const result = await api.bookAppointment(booking);
-      setAppointment(result);
-      setStep(STEP.BOOKED);
-      await botSay("🎉 Your appointment has been booked successfully!");
+      // Remember for the success card.
+      setAppointment({
+        result,
+        summary: {
+          doctorName: params.doctorName,
+          departmentName: params.departmentName || '',
+          date: params.sessionDate,
+          time: params.displayTime || params.timeSlot,
+          procedureName: params.procedureName,
+          patientName: `${params.firstName || ''} ${params.lastName || ''}`.trim(),
+        },
+      });
+      resolve({ confirmed: true, appointmentId: result?.appointmentId ?? null, result });
     } catch (e) {
-      await botSay(`Booking failed. ${e.message}`);
+      resolve({ confirmed: true, error: e.message });
     } finally {
-      setLoading(false);
+      setIsTyping(false);
     }
   };
 
-  // ----------------- Reset & Start -----------------
-  const startConversation = useCallback(async () => {
-    setMessages([]);
-    setBooking({
-      department: null, doctor: null, slot: null, procedure: null,
-      mobile: null, patient: null, isNewPatient: false,
-      firstName: null, lastName: null, gender: null, dob: null,
-    });
+  const handleConfirmCancel = () => {
+    if (!confirmResolverRef.current) return;
+    const resolve = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setPendingConfirm(null);
+    resolve({ confirmed: false });
+  };
+
+  // -----------------------------------------------------------------
+  // The agent loop
+  // -----------------------------------------------------------------
+  const runAgent = useCallback(
+    async (userText, { skipDisplay = false } = {}) => {
+      if (!userText) return;
+
+      // Append to API history.
+      apiMessagesRef.current.push({ role: 'user', content: userText });
+
+      if (!skipDisplay) {
+        pushDisplay({ sender: 'user', text: userText });
+      }
+
+      setWidget(null);
+      setError(null);
+      setIsTyping(true);
+      setInputDisabled(true);
+
+      try {
+        let nextWidget = null;
+        for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
+          const assistant = await chatCompletion(
+            apiMessagesRef.current,
+            TOOL_SCHEMA
+          );
+
+          // Push the assistant message into history (including tool_calls).
+          // tool_calls field must be preserved or the next round will be invalid.
+          apiMessagesRef.current.push(assistant);
+
+          // Show any text the assistant gave us.
+          if (assistant.content && assistant.content.trim()) {
+            pushDisplay({ sender: 'bot', text: assistant.content });
+          }
+
+          const toolCalls = assistant.tool_calls || [];
+          if (toolCalls.length === 0) {
+            break; // conversation pause — wait for next user input
+          }
+
+          // Execute every tool call in order. Latest selectable result wins
+          // as the widget to render.
+          for (const tc of toolCalls) {
+            let parsedArgs = {};
+            try {
+              parsedArgs = JSON.parse(tc.function.arguments || '{}');
+            } catch (e) {
+              apiMessagesRef.current.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                name: tc.function.name,
+                content: JSON.stringify({ error: `Invalid JSON args: ${e.message}` }),
+              });
+              continue;
+            }
+
+            let result;
+            try {
+              result = await callTool(tc.function.name, parsedArgs, ctxRef.current);
+            } catch (e) {
+              result = { error: e.message };
+            }
+
+            apiMessagesRef.current.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              name: tc.function.name,
+              content: JSON.stringify(result),
+            });
+
+            const w = widgetFromToolResult(tc.function.name, result);
+            if (w) nextWidget = w;
+          }
+        }
+
+        // Render the latest selectable widget (if any) after the loop.
+        if (nextWidget) setWidget(nextWidget);
+      } catch (e) {
+        const msg = e?.message || 'Something went wrong talking to the assistant.';
+        setError(msg);
+        pushDisplay({ sender: 'bot', text: `Sorry, I hit an issue: ${msg}` });
+      } finally {
+        setIsTyping(false);
+        setInputDisabled(false);
+      }
+    },
+    [pushDisplay]
+  );
+
+  // -----------------------------------------------------------------
+  // Initial greeting + reset
+  // -----------------------------------------------------------------
+  const startConversation = useCallback(() => {
+    setDisplayMessages([]);
+    setWidget(null);
+    setPendingConfirm(null);
     setAppointment(null);
-    await botSay("👋 Hello! I'm your Qurix Healthcare Assistant.");
-    await botSay("I can help you book an appointment with our doctors in just a few steps.", 800);
-    await loadDepartments();
-  }, [botSay, loadDepartments]);
+    setError(null);
+    confirmResolverRef.current = null;
+    ctxRef.current = { confirmBooking };
+    apiMessagesRef.current = [
+      { role: 'system', content: buildSystemPrompt() },
+    ];
+    pushDisplay({ sender: 'bot', text: GREETING });
+  }, [confirmBooking, pushDisplay]);
 
   useEffect(() => {
     startConversation();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ----------------- Render the active step UI -----------------
-  const renderStepUI = () => {
-    if (loading || isTyping) return null;
+  // Pre-warm departments cache in the background so the first search is snappy.
+  useEffect(() => {
+    api.fetchDepartments()
+      .then((d) => { ctxRef.current.departmentsCache = d; })
+      .catch(() => { /* ignore — will fetch on demand */ });
+  }, []);
 
-    switch (step) {
-      case STEP.SELECT_DEPARTMENT:
-        return (
-          <OptionList
-            options={departments.map((d) => ({
-              id: d.departmentId,
-              title: d.departmentName,
-              icon: d.icon || 'medkit',
-            }))}
-            onSelect={(opt) => onSelectDepartment(departments.find((d) => d.departmentId === opt.id))}
-            columns={2}
-          />
-        );
-
-      case STEP.SELECT_DOCTOR:
-        return (
-          <OptionList
-            options={doctors.map((d) => ({
-              id: d.doctorId,
-              title: d.doctorName,
-              subtitle: d.qualification,
-              meta: d.experience ? `${d.experience} experience` : null,
-              icon: 'person',
-            }))}
-            onSelect={(opt) => onSelectDoctor(doctors.find((d) => d.doctorId === opt.id))}
-          />
-        );
-
-      case STEP.SELECT_SLOT:
-        return (
-          <OptionList
-            options={slots.map((s) => ({
-              id: s.slotId,
-              title: s.startTime,
-              subtitle: s.date,
-              icon: 'time',
-            }))}
-            onSelect={(opt) => onSelectSlot(slots.find((s) => s.slotId === opt.id))}
-            columns={3}
-          />
-        );
-
-      case STEP.ASK_MOBILE:
-        return (
-          <ChatInput
-            placeholder="10-digit mobile number"
-            keyboardType="phone-pad"
-            maxLength={10}
-            prefix="+91"
-            validate={validateMobile}
-            onSubmit={onSubmitMobile}
-          />
-        );
-
-      case STEP.SELECT_EXISTING_PATIENT:
-        return (
-          <View>
-            <OptionList
-              options={existingPatients.map((p) => ({
-                id: p.patientId,
-                title: `${p.firstName} ${p.lastName}`,
-                subtitle: `${p.gender} · DOB ${formatDate(p.dob)}`,
-                icon: 'person-circle',
-              }))}
-              onSelect={(opt) =>
-                onSelectExistingPatient(existingPatients.find((p) => p.patientId === opt.id))
-              }
-            />
-            <TouchableOpacity style={styles.addNewBtn} onPress={onAddNewPatient}>
-              <Ionicons name="add-circle-outline" size={18} color={COLORS.primary} />
-              <Text style={styles.addNewText}>Add new patient</Text>
-            </TouchableOpacity>
-          </View>
-        );
-
-      case STEP.ASK_FIRST_NAME:
-        return (
-          <ChatInput
-            placeholder="First name"
-            validate={(v) => validateName(v, 'First name')}
-            onSubmit={onSubmitFirstName}
-          />
-        );
-
-      case STEP.ASK_LAST_NAME:
-        return (
-          <ChatInput
-            placeholder="Last name"
-            validate={(v) => validateName(v, 'Last name')}
-            onSubmit={onSubmitLastName}
-          />
-        );
-
-      case STEP.ASK_GENDER:
-        return (
-          <OptionList
-            options={[
-              { id: 'Male', title: 'Male' },
-              { id: 'Female', title: 'Female' },
-              { id: 'Other', title: 'Other' },
-            ]}
-            onSelect={(opt) => onSubmitGender(opt.id)}
-            variant="pill"
-          />
-        );
-
-      case STEP.ASK_DOB:
-        return <DOBPicker onSubmit={onSubmitDOB} />;
-
-      case STEP.SELECT_PROCEDURE:
-        return (
-          <OptionList
-            options={procedures.map((p) => {
-              const isFree = p.followUp || (p.price ?? 0) === 0;
-              const icon = p.virtual ? 'videocam' : isFree ? 'gift' : 'cash';
-              return {
-                id: p.procedureId,
-                title: p.procedureName,
-                subtitle: isFree ? 'No charge' : `₹${p.price}`,
-                meta: p.duration ? `${p.duration} min` : null,
-                icon,
-              };
-            })}
-            onSelect={(opt) => onSelectProcedure(procedures.find((p) => p.procedureId === opt.id))}
-          />
-        );
-
-      case STEP.CONFIRM_BOOKING:
-        return (
-          <View style={styles.summaryCard}>
-            <Text style={styles.summaryTitle}>Confirm your booking</Text>
-            <SummaryRow label="Department" value={booking.department?.departmentName} />
-            <SummaryRow label="Doctor" value={booking.doctor?.doctorName} />
-            <SummaryRow label="Date & Time" value={`${booking.slot?.date} · ${booking.slot?.startTime}`} />
-            <SummaryRow label="Procedure" value={booking.procedure?.procedureName} />
-            <SummaryRow label="Patient" value={`${booking.firstName} ${booking.lastName}`} />
-            <SummaryRow label="Mobile" value={`+91 ${booking.mobile}`} />
-
-            <View style={styles.confirmRow}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={startConversation}>
-                <Text style={styles.cancelText}>Start Over</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.confirmBtn} onPress={onConfirmBooking}>
-                <Ionicons name="checkmark-circle" size={18} color={COLORS.white} />
-                <Text style={styles.confirmText}>Book Appointment</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        );
-
-      case STEP.BOOKED:
-        return (
-          <BookingConfirmation
-            appointment={appointment}
-            summary={{
-              departmentName: booking.department.departmentName,
-              doctorName: booking.doctor.doctorName,
-              date: booking.slot.date,
-              time: booking.slot.startTime,
-              procedureName: booking.procedure.procedureName,
-              patientName: `${booking.firstName} ${booking.lastName}`,
-            }}
-            onNewBooking={startConversation}
-          />
-        );
-
-      default:
-        return null;
-    }
+  // -----------------------------------------------------------------
+  // Widget → user-message handlers
+  // -----------------------------------------------------------------
+  const onSelectDoctor = (doc) => {
+    setWidget(null);
+    runAgent(`${doc.doctorName}`);
+  };
+  const onSelectSlot = (slot) => {
+    setWidget(null);
+    runAgent(`${slot.displayTime} on ${slot.displayDate}`);
+  };
+  const onSelectProcedure = (proc) => {
+    setWidget(null);
+    runAgent(proc.procedureName);
   };
 
-  // ----------------- Layout -----------------
+  const onSubmitText = (text) => {
+    runAgent(text);
+  };
+
+  // -----------------------------------------------------------------
+  // Render helpers
+  // -----------------------------------------------------------------
+  const renderWidget = () => {
+    if (!widget) return null;
+
+    if (widget.kind === 'doctors') {
+      return (
+        <View style={styles.widgetBox}>
+          <OptionList
+            options={widget.items.map((d) => ({
+              id: d.doctorId,
+              title: d.doctorName,
+              subtitle: d.qualification || d.department,
+              meta: d.department,
+              icon: 'person',
+            }))}
+            onSelect={(opt) =>
+              onSelectDoctor(widget.items.find((d) => d.doctorId === opt.id))
+            }
+            maxHeight={260}
+          />
+        </View>
+      );
+    }
+
+    if (widget.kind === 'slots') {
+      return (
+        <View style={styles.widgetBox}>
+          <OptionList
+            options={widget.items.map((s) => ({
+              id: s.slotId,
+              title: s.displayTime,
+              subtitle: s.displayDate,
+              icon: 'time',
+            }))}
+            onSelect={(opt) =>
+              onSelectSlot(widget.items.find((s) => s.slotId === opt.id))
+            }
+            columns={2}
+            maxHeight={260}
+          />
+        </View>
+      );
+    }
+
+    if (widget.kind === 'procedures') {
+      return (
+        <View style={styles.widgetBox}>
+          <OptionList
+            options={widget.items.map((p) => ({
+              id: p.procedureId,
+              title: p.procedureName,
+              subtitle: p.isFree ? 'No charge' : `₹${p.price}`,
+              meta: p.duration ? `${p.duration} min` : null,
+              icon: p.isVirtual ? 'videocam' : p.isFree ? 'gift' : 'cash',
+            }))}
+            onSelect={(opt) =>
+              onSelectProcedure(widget.items.find((p) => p.procedureId === opt.id))
+            }
+            maxHeight={240}
+          />
+        </View>
+      );
+    }
+
+    return null;
+  };
+
+  const renderConfirmCard = () => {
+    if (!pendingConfirm) return null;
+    const p = pendingConfirm;
+    const priceLine =
+      p.procedurePrice != null
+        ? (p.procedurePrice > 0 ? `₹${p.procedurePrice}` : 'No charge')
+        : null;
+    return (
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryTitle}>Confirm your booking</Text>
+        <SummaryRow label="Doctor" value={p.doctorName} />
+        <SummaryRow label="Date & Time" value={`${p.sessionDate} · ${p.displayTime || p.timeSlot}`} />
+        <SummaryRow label="Procedure" value={p.procedureName} />
+        {priceLine && <SummaryRow label="Fee" value={priceLine} />}
+        <SummaryRow
+          label="Patient"
+          value={`${p.firstName || ''} ${p.lastName || ''}`.trim()}
+        />
+        <SummaryRow label="Mobile" value={p.mobile ? `+91 ${p.mobile}` : ''} />
+
+        <View style={styles.confirmRow}>
+          <TouchableOpacity style={styles.cancelBtn} onPress={handleConfirmCancel}>
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.confirmBtn} onPress={handleConfirmAccept}>
+            <Ionicons name="checkmark-circle" size={18} color={COLORS.white} />
+            <Text style={styles.confirmText}>Book Appointment</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  const renderSuccessCard = () => {
+    if (!appointment) return null;
+    return (
+      <BookingConfirmation
+        appointment={appointment.result || {}}
+        summary={appointment.summary}
+        onNewBooking={startConversation}
+      />
+    );
+  };
+
+  // -----------------------------------------------------------------
+  // Layout
+  // -----------------------------------------------------------------
   return (
     <View style={styles.container}>
       <ChatHeader onReset={startConversation} />
@@ -507,19 +447,57 @@ const ChatBot = () => {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {messages.map((m) => (
-            <ChatMessage key={m.id} sender={m.sender} message={m.text} timestamp={m.timestamp} />
-          ))}
-          {isTyping && <TypingIndicator />}
-          {loading && (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color={COLORS.primary} />
-              <Text style={styles.loadingText}>Please wait...</Text>
+          {!hasApiKey() && (
+            <View style={styles.errorBanner}>
+              <Ionicons name="warning" size={16} color={COLORS.white} />
+              <Text style={styles.errorBannerText}>
+                OpenAI key missing. Add EXPO_PUBLIC_OPENAI_API_KEY to your .env file.
+              </Text>
             </View>
           )}
-          {renderStepUI()}
-          <View style={{ height: 20 }} />
+
+          {displayMessages.map((m) => (
+            <ChatMessage
+              key={m.id}
+              sender={m.sender}
+              message={m.text}
+              timestamp={m.timestamp}
+            />
+          ))}
+
+          {isTyping && <TypingIndicator />}
+
+          {renderWidget()}
+          {renderConfirmCard()}
+          {renderSuccessCard()}
+
+          {error && (
+            <View style={styles.errorChip}>
+              <Text style={styles.errorChipText}>{error}</Text>
+            </View>
+          )}
+
+          <View style={{ height: 80 }} />
         </ScrollView>
+
+        <View style={styles.inputDock}>
+          {!appointment && (
+            <ChatInput
+              placeholder="Ask anything or type to reply..."
+              onSubmit={onSubmitText}
+              autoFocus={false}
+            />
+          )}
+          <Text style={styles.poweredBy}>
+            Powered by {LLM_MODEL}
+          </Text>
+        </View>
+
+        {inputDisabled && isTyping && (
+          <View style={styles.busyOverlay} pointerEvents="none">
+            <ActivityIndicator size="small" color={COLORS.primary} />
+          </View>
+        )}
       </KeyboardAvoidingView>
     </View>
   );
@@ -537,37 +515,35 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   scrollContent: { paddingVertical: 12, paddingBottom: 30 },
 
-  loadingRow: {
+  widgetBox: { marginTop: 4 },
+
+  errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
+    backgroundColor: COLORS.warning,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: SIZES.radius,
   },
-  loadingText: {
-    color: COLORS.textSecondary,
-    fontSize: SIZES.small,
+  errorBannerText: {
+    color: COLORS.white,
     marginLeft: 8,
+    flex: 1,
+    fontSize: SIZES.small,
+    fontWeight: '500',
   },
 
-  addNewBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    marginHorizontal: 16,
+  errorChip: {
+    backgroundColor: COLORS.primaryLight,
+    marginHorizontal: 12,
     marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: SIZES.radius,
-    borderWidth: 1.5,
-    borderColor: COLORS.primary,
-    borderStyle: 'dashed',
   },
-  addNewText: {
-    color: COLORS.primary,
-    fontWeight: '600',
-    marginLeft: 6,
-    fontSize: SIZES.medium,
-  },
+  errorChipText: { color: COLORS.error, fontSize: SIZES.small },
 
   summaryCard: {
     backgroundColor: COLORS.white,
@@ -626,6 +602,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: SIZES.medium,
     marginLeft: 6,
+  },
+
+  inputDock: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.divider,
+    paddingBottom: 8,
+    backgroundColor: COLORS.background,
+  },
+  poweredBy: {
+    textAlign: 'center',
+    color: COLORS.textMuted,
+    fontSize: 10,
+    marginTop: 4,
+  },
+
+  busyOverlay: {
+    position: 'absolute',
+    right: 24,
+    bottom: 86,
   },
 });
 

@@ -119,13 +119,7 @@ export const fetchDoctorAvailability = async (
     method: 'POST',
     body: JSON.stringify(payload),
   });
-  // TODO: remove after slot rendering is verified
-  // eslint-disable-next-line no-console
-  console.log('[fetchDoctorAvailability] payload:', payload, 'raw response:', raw);
-  const mapped = mapDoctorAvailability(raw);
-  // eslint-disable-next-line no-console
-  console.log('[fetchDoctorAvailability] mapped:', mapped);
-  return mapped;
+  return mapDoctorAvailability(raw);
 };
 
 // ============================================================

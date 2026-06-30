@@ -1,163 +1,195 @@
 # Qurix Healthcare Chatbot
 
-A professional, end-to-end appointment booking chatbot built in **React Native** (Expo) that runs on **Web, iOS, and Android** from a single codebase. Designed for the Qurix healthcare platform.
+A conversational, AI-powered appointment-booking assistant built in **React Native** (Expo). Runs on **Web, iOS, and Android** from a single codebase. The chat is driven by OpenAI's tool-calling — the agent talks naturally with the patient and invokes the Qurix API behind the scenes to find doctors, check availability, and book the appointment.
 
 ---
 
-## ✨ Features
+## Features
 
-- 🤖 Step-by-step conversational appointment booking
-- 🏥 Department → Doctor → Slot → Procedure flow
-- 📱 Mobile-number lookup with existing-patient detection
-- 👤 New patient registration (name, gender, DOB)
-- ✅ Final confirmation screen with booking summary
-- 🎨 Qurix-branded design (sidebar dashboard on desktop, full-screen on mobile)
-- 🔌 Mock API for instant testing, easy switch to real backend
-- ✅ Input validation (mobile, name, DOB)
-- ⚡ Smooth typing indicator and message animations
+- Natural-language chat: "I need a cardiologist tomorrow" → agent searches, finds slots, books.
+- LLM-driven flow (OpenAI tool calling) — no rigid step machine.
+- Inline pickers for structured choices (doctor / time / procedure).
+- Hard confirmation card before any booking call is made.
+- Patient lookup by mobile; auto-collects new-patient details otherwise.
+- Follow-up procedure (`OPREVISIT`) is shown only when the patient is eligible.
+- Branded Qurix UI — sidebar dashboard on desktop, full-screen on mobile.
+- Mock mode for offline testing (toggle `USE_MOCK` in `src/services/api.js`).
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 QurixChatbot/
-├── App.js                       # Entry — responsive dashboard layout
-├── index.js                     # Expo root registration
+├── App.js                          # Entry — responsive dashboard layout
+├── index.js                        # Expo root registration
+├── metro.config.js                 # Wires react-native-svg-transformer
+├── app.json / babel.config.js
 ├── package.json
-├── app.json                     # Expo config (icons, splash, brand color)
-├── babel.config.js
+├── .env / .env.example             # OpenAI key (git-ignored)
+├── assets/
+│   └── qurix_logo.svg
 └── src/
     ├── constants/
-    │   └── theme.js             # Qurix brand colors, fonts, shadows
+    │   └── theme.js                # Qurix brand colors, sizes, shadows
     ├── services/
-    │   └── api.js               # API + mock data (toggle USE_MOCK)
+    │   ├── api.js                  # Real + mock API + booking payload builder
+    │   ├── llm.js                  # OpenAI chat-completion wrapper (fetch)
+    │   ├── agentPrompt.js          # System prompt for the agent
+    │   └── agentTools.js           # Tool schema + handlers
+    ├── models/
+    │   ├── department.js           # Department + nested doctors
+    │   ├── sessionInstance.js      # Doctor availability + flat slots
+    │   ├── patient.js              # Patient lookup
+    │   └── procedure.js            # Procedure list + eligibility filter
     ├── utils/
-    │   └── validators.js        # Mobile / name / DOB validators
+    │   └── validators.js           # Mobile / name / DOB validators
     └── components/
-        ├── ChatBot.js           # Main orchestrator (state machine)
-        ├── ChatHeader.js        # Branded header with logo
-        ├── ChatMessage.js       # Bot/user bubble
-        ├── TypingIndicator.js   # Animated 3-dot indicator
-        ├── ChatInput.js         # Text input + send button
-        ├── DOBPicker.js         # Date picker (web + native)
-        ├── OptionList.js        # Selectable list (cards / pills)
+        ├── ChatBot.js              # Conversational agent UI (main)
+        ├── BrandLogo.js            # SVG logo wrapper
+        ├── ChatHeader.js
+        ├── ChatMessage.js
+        ├── TypingIndicator.js
+        ├── ChatInput.js
+        ├── OptionList.js
+        ├── DOBPicker.js            # (legacy — not used by agent)
         └── BookingConfirmation.js
 ```
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ```bash
 # 1. Install dependencies
 npm install
 
-# 2. Run on web (recommended for first test)
+# 2. Configure your OpenAI key (see next section)
+cp .env.example .env
+# then edit .env
+
+# 3. Run on web
 npm run web
 
-# 3. Run on mobile
-npm run android      # Android
-npm run ios          # iOS (Mac only)
+# 4. Or run on native
+npm run android
+npm run ios          # macOS only
 ```
-
-> The app launches with **mock data enabled**, so you can fully test the booking flow without any backend.
 
 ---
 
-## 🔌 Connecting Your Real API
+## OpenAI Setup
 
-Open `src/services/api.js` and change two things:
+The chatbot uses **GPT-4o** with tool calling. You need an API key.
+
+1. Get a key from https://platform.openai.com/api-keys
+2. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+3. Edit `.env` and paste your key:
+   ```
+   EXPO_PUBLIC_OPENAI_API_KEY=sk-...
+   # Optional, defaults to gpt-4o:
+   # EXPO_PUBLIC_OPENAI_MODEL=gpt-4o-mini
+   ```
+4. **Restart the dev server.** Expo only reads `.env` on startup; hot reload won't pick up env changes.
+
+The chat will show a yellow banner if the key is missing.
+
+### Production warning
+
+Any variable prefixed `EXPO_PUBLIC_` is bundled into the client — fine for local dev, **not safe for production**. Before shipping:
+
+1. Stand up a small backend (Node/Express, Cloudflare Worker, Next.js API route, etc.) that holds the real key.
+2. Replace `src/services/llm.js` so its single `fetch()` call points at your backend endpoint instead of `api.openai.com` directly.
+3. The rest of the agent code stays unchanged.
+
+---
+
+## API Endpoints
+
+`src/services/api.js` talks to the Qurix preprod by default:
 
 ```js
-const BASE_URL = 'https://your-real-api.com/v1';  // <-- your API
-export const USE_MOCK = false;                    // <-- turn mock off
+const BASE_URL = 'https://preprod.qurix.io/preprodhims/openapi';
 ```
 
-The API expects the following endpoints — **adjust the paths** in `api.js` to match yours:
+| Step | Method | Endpoint | Notes |
+|---|---|---|---|
+| Departments + doctors | POST | `/listOfAllSessionsDoctors` | Returns nested doctors per department |
+| Doctor availability | POST | `/sessioninstances` | Body: `{ doctorId, locationId, dates }` |
+| Patient lookup | GET | `/patients?mobileNo=...&orgId=...&isActive=...&locids=...` | 404 = no patient (handled gracefully) |
+| Procedures for session | POST | `/listOfDoctorWiseProceduresV2` | Body: `{ sessionId, locationId }` |
+| Book appointment | POST | `/createPatientAppointment/other/` | Combined patient-create + booking |
 
-| Step | Method | Endpoint | Response |
-|------|--------|----------|----------|
-| 1. Departments | GET | `/departments` | `[{ departmentId, departmentName, icon? }]` |
-| 2. Doctors | GET | `/departments/:id/doctors` | `[{ doctorId, doctorName, qualification?, experience? }]` |
-| 3. Availability | GET | `/doctors/:id/availability` | `[{ sessionId, date, startTime, endTime, available }]` |
-| 4. Procedures | GET | `/sessions/:id/procedures` | `[{ procedureId, procedureName, fee, type }]` |
-| 5. Patient lookup | GET | `/patients/lookup?mobile=XXX` | `{ exists, patients: [...] }` |
-| 6. Create patient | POST | `/patients` | `{ patientId, ... }` |
-| 7. Book | POST | `/appointments` | `{ appointmentId, status, ... }` |
+Static defaults (`locationId`, `orgId`, `locIds`) are tagged with `TODO` comments in `api.js` for future dynamic resolution.
 
-If your endpoints don't match exactly, simply edit the relevant function in `api.js` — the rest of the app doesn't need to change.
+### Mock mode
 
-### Authentication
-
-If your API requires a bearer token:
+Flip the switch in `src/services/api.js` for offline testing:
 
 ```js
-import { setAuthToken } from './src/services/api';
-setAuthToken('your-jwt-here');
+export const USE_MOCK = true;
 ```
+
+Try mobile `9876543210` (ends in 0) for an existing patient, anything else for the new-patient flow.
 
 ---
 
-## 🎨 Brand Colors
+## How the Agent Works
 
-Defined in `src/constants/theme.js` — currently set to a deep professional blue (`#0B5FFF`) matching the Qurix platform. The logo is loaded directly from `https://qurix.com/images/brand/logo.svg` at runtime, so it always stays in sync with your brand.
-
-To bundle the logo locally instead, save it to `assets/logo.svg` and update `BRAND.logoUrl` in `theme.js`:
-
-```js
-import LogoLocal from './assets/logo.svg';
-export const BRAND = { logoUrl: LogoLocal, ... };
 ```
+┌─────────────────────────────────────────────────────────┐
+│  User types / picks a chip → user message              │
+│                ↓                                        │
+│  ChatBot.js runs OpenAI tool-calling loop              │
+│                ↓                                        │
+│  LLM may call: search_doctors, get_doctor_availability, │
+│                lookup_patient, list_procedures,         │
+│                request_booking                          │
+│                ↓                                        │
+│  Each tool wraps a call in api.js + its model mapper    │
+│                ↓                                        │
+│  Tool result returns to LLM; UI auto-renders any        │
+│  selectable result as inline chips                      │
+│                ↓                                        │
+│  For request_booking: UI pauses LLM, shows confirmation │
+│  card, only fires the booking API on explicit Confirm  │
+└─────────────────────────────────────────────────────────┘
+```
+
+Key files:
+
+- `src/services/agentTools.js` — tool schema sent to OpenAI + handlers.
+- `src/services/agentPrompt.js` — system prompt (date is injected per session).
+- `src/services/llm.js` — single `fetch()` against `chat.completions`.
+- `src/components/ChatBot.js` — the agent loop + UI orchestration.
+
+Adding a new tool: define it in `TOOL_SCHEMA`, add a handler, add a `case` in `callTool`. If it returns selectable items, also extend `widgetFromToolResult` and the `renderWidget()` switch in `ChatBot.js`.
 
 ---
 
-## 🧩 Conversation Flow
+## Brand Customization
 
-```
-WELCOME
-   ↓
-SELECT_DEPARTMENT   (cards, 2-column grid)
-   ↓
-SELECT_DOCTOR        (cards with qualification + experience)
-   ↓
-SELECT_SLOT          (cards, 2-column grid)
-   ↓
-ASK_MOBILE           (text input, 10-digit validation)
-   ├─ Number found ──→ SELECT_EXISTING_PATIENT
-   │                       ↓
-   │                   (or Add new patient)
-   └─ New number ──→ ASK_FIRST_NAME → ASK_LAST_NAME →
-                     ASK_GENDER → ASK_DOB
-   ↓
-SELECT_PROCEDURE     (cards with fee)
-   ↓
-CONFIRM_BOOKING      (summary card + Book button)
-   ↓
-BOOKED               (success screen)
-```
+Edit `src/constants/theme.js`:
 
-The whole state machine lives in `ChatBot.js` — easy to extend if you need to insert new steps (e.g. insurance, symptoms).
+- `COLORS.primary` — the main brand blue used in header, sidebar, user bubbles.
+- `BRAND.name`, `BRAND.tagline`, `BRAND.supportPhone`, `BRAND.supportEmail` — copy.
+
+The logo is bundled at `assets/qurix_logo.svg` and rendered via `<BrandLogo />` (uses `react-native-svg-transformer` so SVGs import as React components).
 
 ---
 
-## 📱 Responsive Behavior
+## Responsive Behavior
 
-- **Desktop (≥ 900px wide):** branded sidebar + centered chat window
-- **Tablet / Mobile (< 900px):** full-screen chatbot
+- **Desktop (≥ 900px wide):** branded sidebar + centered chat window.
+- **Mobile / narrow (< 900px):** full-screen chatbot.
 - Works the same in a browser, in a WebView, and as a native iOS/Android app.
 
 ---
 
-## 🧪 Testing the Mock Flow
-
-Try these mobile numbers in the mock mode:
-- **9876543210** (ends in `0`) → returns 2 existing patients
-- **9876543211** (any other) → goes to new-patient flow
-
----
-
-## 📞 Support
+## Support
 
 - Phone: +91-7075740042
 - Email: hello@qurix.com
