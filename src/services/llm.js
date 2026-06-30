@@ -5,20 +5,32 @@
 // identically on React Native (web, iOS, Android) with no extra
 // dependencies or polyfills.
 //
-// SECURITY NOTE:
-// The API key is read from EXPO_PUBLIC_OPENAI_API_KEY which Expo
-// bundles into the client. That's fine for local development; for
-// production, replace this module with calls to a small backend
-// proxy that holds the real key server-side.
+// Two modes, picked at build time:
+//
+//   1. Proxy mode (recommended for any public deploy)
+//      Set EXPO_PUBLIC_LLM_PROXY_URL to a backend endpoint that
+//      forwards the request to OpenAI and injects the real key
+//      server-side. The client sends NO Authorization header and
+//      no OpenAI key is bundled.  See server/ for a ready-to-deploy
+//      Vercel function.
+//
+//   2. Direct mode (local development only)
+//      If EXPO_PUBLIC_LLM_PROXY_URL is empty, the client calls
+//      api.openai.com directly using EXPO_PUBLIC_OPENAI_API_KEY.
+//      NEVER ship a build in this mode publicly — OpenAI's secret
+//      scanner will revoke the key within minutes.
 // =================================================================
 
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
-const API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+const PROXY_URL = process.env.EXPO_PUBLIC_LLM_PROXY_URL || '';
+const API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY || '';
 const MODEL = process.env.EXPO_PUBLIC_OPENAI_MODEL || 'gpt-4o';
 
+const useProxy = () => PROXY_URL.length > 0;
+
 export const hasApiKey = () =>
-  typeof API_KEY === 'string' && API_KEY.startsWith('sk-');
+  useProxy() || (typeof API_KEY === 'string' && API_KEY.startsWith('sk-'));
 
 /**
  * Run one chat-completion round against OpenAI with tool calling enabled.
@@ -36,8 +48,9 @@ export const hasApiKey = () =>
 export const chatCompletion = async (messages, tools = [], opts = {}) => {
   if (!hasApiKey()) {
     throw new Error(
-      'OpenAI key missing. Set EXPO_PUBLIC_OPENAI_API_KEY in your .env file ' +
-      '(see .env.example) and restart the dev server.'
+      'No LLM endpoint configured. Set EXPO_PUBLIC_LLM_PROXY_URL (recommended) ' +
+      'or EXPO_PUBLIC_OPENAI_API_KEY in your .env file (see .env.example) and ' +
+      'restart the dev server.'
     );
   }
 
@@ -52,12 +65,15 @@ export const chatCompletion = async (messages, tools = [], opts = {}) => {
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(OPENAI_URL, {
+  const url = useProxy() ? PROXY_URL : OPENAI_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  if (!useProxy()) {
+    headers.Authorization = `Bearer ${API_KEY}`;
+  }
+
+  const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${API_KEY}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
     signal: opts.signal,
   });

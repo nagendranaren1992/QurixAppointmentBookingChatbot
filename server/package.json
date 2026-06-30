@@ -1,0 +1,13 @@
+{
+  "name": "qurix-chatbot-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Thin Vercel serverless proxy in front of the OpenAI Chat Completions API. Keeps the OpenAI key on the server so the static chatbot bundle never ships it to the browser.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  }
+}
