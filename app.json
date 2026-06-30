@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Qurix Healthcare Chatbot",
+    "slug": "qurix-chatbot",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#0B5FFF",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.qurix.chatbot"
+    },
+    "android": {
+      "package": "com.qurix.chatbot",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B5FFF"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
