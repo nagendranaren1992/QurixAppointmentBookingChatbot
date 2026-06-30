@@ -87,7 +87,9 @@ export const SHADOWS = {
 export const BRAND = {
   name: 'Qurix',
   tagline: 'Healthcare Assistant',
-  logoUrl: 'https://qurix.com/images/brand/logo.svg',
+  // Logo is bundled locally — import via `<BrandLogo />` from src/components.
+  // The path below is for reference / external links only.
+  logoPath: './assets/qurix_logo.svg',
   supportPhone: '+91-7075740042',
   supportEmail: 'hello@qurix.com',
 };

@@ -1,24 +1,17 @@
 import React from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SIZES, SHADOWS, BRAND } from '../constants/theme';
+import BrandLogo from './BrandLogo';
 
 // ChatHeader
-// Renders the Qurix logo (loaded from the live brand URL) and an online indicator.
-// Place your own asset under /assets and switch the Image source if you prefer
-// to bundle the logo locally instead of fetching it remotely.
+// Renders the Qurix logo (bundled SVG) and an online indicator.
 const ChatHeader = ({ onReset }) => {
   return (
     <View style={styles.container}>
       <View style={styles.left}>
         <View style={styles.logoWrap}>
-          <Image
-            source={{ uri: BRAND.logoUrl }}
-            style={styles.logo}
-            resizeMode="contain"
-            // Fallback for platforms that can't render remote SVG (RN native)
-            onError={() => { /* swallow — fallback initials show below */ }}
-          />
+          <BrandLogo width={32} height={32} />
         </View>
         <View>
           <Text style={styles.title}>{BRAND.name} Assistant</Text>

@@ -1,6 +1,7 @@
 import React from 'react';
-import { View, Text, StyleSheet, Image } from 'react-native';
-import { COLORS, SIZES, SHADOWS, BRAND } from '../constants/theme';
+import { View, Text, StyleSheet } from 'react-native';
+import { COLORS, SIZES, SHADOWS } from '../constants/theme';
+import BrandLogo from './BrandLogo';
 
 // ChatMessage — renders a single bot or user message bubble.
 const ChatMessage = ({ message, sender = 'bot', timestamp }) => {
@@ -10,11 +11,7 @@ const ChatMessage = ({ message, sender = 'bot', timestamp }) => {
     <View style={[styles.row, isBot ? styles.rowBot : styles.rowUser]}>
       {isBot && (
         <View style={styles.avatar}>
-          <Image
-            source={{ uri: BRAND.logoUrl }}
-            style={styles.avatarImg}
-            resizeMode="contain"
-          />
+          <BrandLogo width={22} height={22} />
         </View>
       )}
 

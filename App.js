@@ -1,8 +1,9 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, useWindowDimensions, Image, Platform } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, useWindowDimensions, Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import ChatBot from './src/components/ChatBot';
+import BrandLogo from './src/components/BrandLogo';
 import { COLORS, SIZES, SHADOWS, BRAND } from './src/constants/theme';
 
 // =================================================================
@@ -46,11 +47,7 @@ export default function App() {
           <View style={styles.sidebar}>
             <View style={styles.brandRow}>
               <View style={styles.brandLogo}>
-                <Image
-                  source={{ uri: BRAND.logoUrl }}
-                  style={{ width: 32, height: 32 }}
-                  resizeMode="contain"
-                />
+                <BrandLogo width={32} height={32} />
               </View>
               <View>
                 <Text style={styles.brandName}>{BRAND.name}</Text>

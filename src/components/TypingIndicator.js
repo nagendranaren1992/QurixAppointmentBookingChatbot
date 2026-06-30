@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { View, StyleSheet, Animated, Image } from 'react-native';
-import { COLORS, SHADOWS, BRAND } from '../constants/theme';
+import { View, StyleSheet, Animated } from 'react-native';
+import { COLORS, SHADOWS } from '../constants/theme';
+import BrandLogo from './BrandLogo';
 
 // Animated three-dot typing indicator shown while the bot is "thinking".
 const TypingIndicator = () => {
@@ -31,7 +32,7 @@ const TypingIndicator = () => {
   return (
     <View style={styles.row}>
       <View style={styles.avatar}>
-        <Image source={{ uri: BRAND.logoUrl }} style={styles.avatarImg} resizeMode="contain" />
+        <BrandLogo width={22} height={22} />
       </View>
       <View style={styles.bubble}>
         <Animated.View style={[styles.dot, dotStyle(dot1)]} />
