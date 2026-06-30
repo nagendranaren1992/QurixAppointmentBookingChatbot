@@ -3,12 +3,16 @@
   "version": "1.0.0",
   "description": "Qurix Healthcare Appointment Booking Chatbot - React Native",
   "main": "index.js",
+  "homepage": "https://nagendranaren1992.github.io/QurixAppointmentBookingChatbot",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build:web": "expo export:web"
+    "build:web": "expo export -p web",
+    "postbuild:web": "node scripts/prepare-gh-pages.js",
+    "predeploy": "npm run build:web",
+    "deploy": "gh-pages -d dist -t"
   },
   "dependencies": {
     "@expo/metro-runtime": "~3.1.3",
@@ -28,6 +32,7 @@
   "devDependencies": {
     "@babel/core": "^7.20.0",
     "@expo/webpack-config": "~19.0.0",
+    "gh-pages": "^6.3.0",
     "react-native-svg-transformer": "^1.5.3"
   },
   "private": true
