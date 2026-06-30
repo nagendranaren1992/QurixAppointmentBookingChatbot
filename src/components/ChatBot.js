@@ -259,7 +259,13 @@ const ChatBot = () => {
             });
 
             const w = widgetFromToolResult(tc.function.name, result);
-            if (w) nextWidget = w;
+            if (w) {
+              nextWidget = w;
+            } else if (tc.function.name === 'get_doctor_availability') {
+              // Empty availability must not leave a stale doctor picker from
+              // an earlier search_doctors call in the same turn.
+              nextWidget = null;
+            }
           }
         }
 

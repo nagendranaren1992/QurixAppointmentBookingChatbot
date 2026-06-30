@@ -119,7 +119,38 @@ export const fetchDoctorAvailability = async (
     method: 'POST',
     body: JSON.stringify(payload),
   });
-  return mapDoctorAvailability(raw);
+  const availability = mapDoctorAvailability(raw);
+
+  // Guardrail: confirm the API actually returned data for the doctor we
+  // asked about. /sessioninstances has been observed to silently return a
+  // different doctor's schedule (or an empty envelope) for an unknown
+  // doctorId. When that happens we don't want to surface the wrong
+  // doctor's slots — instead, return an empty availability so the chatbot
+  // tells the user that no appointments are available for the selected
+  // doctor on the requested date.
+  if (doctorId != null && String(doctorId).trim() !== '') {
+    const requested = String(doctorId).trim();
+    const returned = availability.doctorId != null
+      ? String(availability.doctorId).trim()
+      : '';
+
+    if (!returned || returned !== requested) {
+      return {
+        doctorId: requested,
+        doctorName: '',
+        displayName: '',
+        doctorProfilePicture: null,
+        departmentId: null,
+        departmentName: '',
+        locationId: null,
+        locationName: '',
+        sessionInstances: [],
+        availableSlots: [],
+      };
+    }
+  }
+
+  return availability;
 };
 
 // ============================================================

@@ -201,6 +201,30 @@ const isFuzzyMatch = (haystack, needle) => {
   return false;
 };
 
+const buildDoctorItem = (doc, dept) => ({
+  doctorId: doc.doctorId,
+  doctorName: doc.doctorName,
+  qualification: doc.qualification,
+  department: dept.departmentName,
+  departmentId: dept.departmentId,
+});
+
+/** All doctors except the one the user just tried (for "pick another" UI). */
+const getAlternateDoctors = async (ctx, excludeDoctorId) => {
+  if (!ctx.departmentsCache) {
+    ctx.departmentsCache = await api.fetchDepartments();
+  }
+  const excluded = String(excludeDoctorId ?? '').trim();
+  const out = [];
+  for (const dept of ctx.departmentsCache) {
+    for (const doc of dept.doctors || []) {
+      if (String(doc.doctorId).trim() === excluded) continue;
+      out.push(buildDoctorItem(doc, dept));
+    }
+  }
+  return out;
+};
+
 const searchDoctors = async ({ query = '' }, ctx) => {
   if (!ctx.departmentsCache) {
     ctx.departmentsCache = await api.fetchDepartments();
@@ -212,22 +236,27 @@ const searchDoctors = async ({ query = '' }, ctx) => {
     for (const doc of dept.doctors || []) {
       const docMatch = q === '' || isFuzzyMatch(doc.doctorName, q);
       if (deptMatch || docMatch) {
-        out.push({
-          doctorId: doc.doctorId,
-          doctorName: doc.doctorName,
-          qualification: doc.qualification,
-          department: dept.departmentName,
-          departmentId: dept.departmentId,
-        });
+        out.push(buildDoctorItem(doc, dept));
       }
     }
   }
   return { count: out.length, doctors: out };
 };
 
-const getDoctorAvailability = async ({ doctorId, dates }, _ctx) => {
+const getDoctorAvailability = async ({ doctorId, dates }, ctx) => {
   const result = await api.fetchDoctorAvailability(doctorId, { dates });
-  return {
+  const availableSlots = result.availableSlots.map((s) => ({
+    slotId: s.slotId,
+    sessionInstanceId: s.sessionInstanceId,
+    sessionId: s.sessionId,
+    sessionDate: s.sessionDate,
+    timeSlot: s.timeSlot,
+    displayTime: s.startTime,
+    displayDate: s.date,
+  }));
+
+  const response = {
+    doctorId,
     doctorName: result.doctorName,
     sessionInstances: result.sessionInstances.map((si) => ({
       sessionInstanceId: si.sessionInstanceId,
@@ -238,16 +267,15 @@ const getDoctorAvailability = async ({ doctorId, dates }, _ctx) => {
       displayToTime: si.displayToTime,
       slotCount: si.slots.length,
     })),
-    availableSlots: result.availableSlots.map((s) => ({
-      slotId: s.slotId,
-      sessionInstanceId: s.sessionInstanceId,
-      sessionId: s.sessionId,
-      sessionDate: s.sessionDate,
-      timeSlot: s.timeSlot,
-      displayTime: s.startTime,
-      displayDate: s.date,
-    })),
+    availableSlots,
+    noAvailability: availableSlots.length === 0,
   };
+
+  if (availableSlots.length === 0) {
+    response.alternateDoctors = await getAlternateDoctors(ctx, doctorId);
+  }
+
+  return response;
 };
 
 const lookupPatient = async ({ mobile }, _ctx) => {
@@ -328,7 +356,12 @@ export const widgetFromToolResult = (name, result) => {
       if ((result.doctors || []).length === 0) return null;
       return { kind: 'doctors', items: result.doctors };
     case 'get_doctor_availability':
-      if ((result.availableSlots || []).length === 0) return null;
+      if ((result.availableSlots || []).length === 0) {
+        if ((result.alternateDoctors || []).length > 0) {
+          return { kind: 'doctors', items: result.alternateDoctors };
+        }
+        return null;
+      }
       return { kind: 'slots', items: result.availableSlots };
     case 'list_procedures':
       if ((result.procedures || []).length === 0) return null;
