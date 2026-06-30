@@ -20,7 +20,7 @@ import BookingConfirmation from './BookingConfirmation';
 
 import api from '../services/api';
 import { COLORS, SIZES, SHADOWS } from '../constants/theme';
-import { chatCompletion, hasApiKey, LLM_MODEL } from '../services/llm';
+import { chatCompletion, hasApiKey } from '../services/llm';
 import { buildSystemPrompt } from '../services/agentPrompt';
 import { TOOL_SCHEMA, callTool, widgetFromToolResult } from '../services/agentTools';
 import { validateMobile } from '../utils/validators';
@@ -534,7 +534,7 @@ const ChatBot = () => {
             )
           )}
           <Text style={styles.poweredBy}>
-            Powered by {LLM_MODEL}
+            Qurix Technologies Private Limited
           </Text>
         </View>
 
